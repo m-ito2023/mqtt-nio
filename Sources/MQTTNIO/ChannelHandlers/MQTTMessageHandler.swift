@@ -23,6 +23,7 @@ class MQTTMessageHandler: ChannelDuplexHandler {
     let client: MQTTClient
     let pingreqHandler: PingreqHandler?
     var decoder: NIOSingleStepByteToMessageProcessor<ByteToMQTTMessageDecoder>
+    var counter = 0
 
     init(_ client: MQTTClient, pingInterval: TimeAmount) {
         self.client = client
@@ -111,6 +112,15 @@ class MQTTMessageHandler: ChannelDuplexHandler {
     func updatePingreqTimeout(_ timeout: TimeAmount) {
         self.pingreqHandler?.updateTimeout(timeout)
     }
+    
+    func twoTimeEvery(_ actionOne: (() -> Void), _ actionTwo: (() -> Void)) {
+        counter += 1
+        if counter % 2 == 0 {
+            actionTwo()
+        } else {
+            actionOne()
+        }
+    }
 
     /// Respond to PUBLISH message
     /// If QoS is `.atMostOnce` then no response is required
@@ -123,10 +133,15 @@ class MQTTMessageHandler: ChannelDuplexHandler {
             self.client.publishListeners.notify(.success(message.publish))
 
         case .atLeastOnce:
-            connection.sendMessageNoWait(MQTTPubAckPacket(type: .PUBACK, packetId: message.packetId))
+            
+            twoTimeEvery({
+                connection.sendMessageNoWait(MQTTPubAckPacket(type: .PUBACK, packetId: message.packetId))
                 .map { _ in return message.publish }
                 .whenComplete { self.client.publishListeners.notify($0) }
-
+            }, {
+                self.client.publishListeners.notify(.success(message.publish))
+            })
+            
         case .exactlyOnce:
             var publish = message.publish
             connection.sendMessage(MQTTPubAckPacket(type: .PUBREC, packetId: message.packetId)) { newMessage in
